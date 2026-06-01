@@ -1,8 +1,62 @@
+// RL Bridge
+var rl_ws = null;
+var rl_action = 0;
+var rl_controller = null; // 将在 match 创建后设置
+
+var ACTION_MAP = [
+  [],                        // 0: 不动
+  ['left'],                  // 1: 左
+  ['right'],                 // 2: 右
+  ['jump'],                  // 3: 跳
+  ['down'],                  // 4: 蹲
+  ['att'],                   // 5: 攻击
+  ['def'],                   // 6: 防御
+  ['left', 'att'],           // 7: 左+攻击
+  ['right', 'att'],          // 8: 右+攻击
+  ['jump', 'att'],           // 9: 跳+攻击(Shoryuken方向)
+  ['down', 'att'],           // 10: 下+攻击
+];
+
+function rl_inject_action(action) {
+  if (!rl_controller) return;
+  var keys = ACTION_MAP[action] || [];
+  // 先释放所有键
+  var all_keys = ['left', 'right', 'up', 'down', 'jump', 'att', 'def'];
+  for (var i = 0; i < all_keys.length; i++) {
+    rl_controller.buf.push([all_keys[i], 0]);
+  }
+  // 再按下新的键
+  for (var i = 0; i < keys.length; i++) {
+    rl_controller.buf.push([keys[i], 1]);
+  }
+}
+
+
+(function () {
+  function connect() {
+    rl_ws = new WebSocket('ws://localhost:8765');
+    rl_ws.onopen = function () { console.log('RL bridge connected'); };
+    rl_ws.onmessage = function (e) {
+      var msg = JSON.parse(e.data);
+      rl_action = msg.action || 0;
+      rl_inject_action(rl_action);
+    };
+    rl_ws.onclose = function () {
+      console.log('RL bridge disconnected, retrying...');
+      setTimeout(connect, 2000);
+    };
+  }
+  connect();
+})();
+
+
+
 /*\
  * match
  * a match hosts a game.
  * a match is a generalization above game modes (e.g. VSmode, stagemode, battlemode)
 \*/
+
 
 define(['core/util', 'core/controller', 'LF/sprite-select',
   'LF/network', 'LF/factories', 'LF/scene', 'LF/background', 'LF/AI', 'third_party/random', 'LF/util',
@@ -80,7 +134,18 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
         $.create_background(setting.background)
         $.create_effects()
         if (setting.player) {
-          $.create_characters(setting.player, {pane: true})
+          // $.create_characters(setting.player, { pane: true })
+          $.create_characters(setting.player, { pane: true })
+          // 设置 RL controller（Player 0 = Davis）
+          var char_keys = Object.keys($.character);
+          if (char_keys.length > 0) {
+            rl_controller = $.character[char_keys[0]].con;
+          }
+
+
+
+
+
         }
         if (setting.set.weapon) {
           $.drop_weapons(setting.set.weapon)
@@ -145,7 +210,7 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
         player,
       })
     }
-    
+
     match.prototype.create_multiple_objects = function (opoint, parent, number, vz) {
       const $ = this
       $.tasks.push({
@@ -218,6 +283,18 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
         if ($.destroyed) {
           return
         }
+        // RL controller 자동 설정
+        if (!rl_controller) {
+          for (var k in $.character) {
+            // if ($.character[k].data.id === 11) {
+            if ($.character[k].data.bmp.name === 'Davis') {
+              rl_controller = $.character[k].con;
+              console.log('RL controller set to Davis');
+              break;
+            }
+          }
+        }
+
         $.TU_trans()
         if ($.time.t === 0) {
           $.match_event('start')
@@ -234,18 +311,59 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
           $.time.$fps.value = 'paused'
         }
       }
-      return $.game_state()
+      // return $.game_state()
+      const state = $.game_state()
+      if (rl_ws && rl_ws.readyState === 1 && state) {
+        rl_ws.send(JSON.stringify(state))
+        // 检测游戏结束，自动重启
+        if (state.davis.hp <= 0 || state.dennis.hp <= 0) {
+          setTimeout(function () {
+            rl_controller = null
+            window.location.reload()
+          }, 2000)  // 2秒后自动刷新
+        }
+      }
+      return state
     }
 
+    // match.prototype.game_state = function () {
+    //   const $ = this
+    //   const d = {}
+    //   d.time = $.time.t
+    //   for (const i in $.character) {
+    //     const c = $.character[i]
+    //     d[i] = [c.ps.x, c.ps.y, c.ps.z, c.health.hp, c.health.mp]
+    //   }
+    //   return d
+    // }
     match.prototype.game_state = function () {
       const $ = this
-      const d = {}
-      d.time = $.time.t
-      for (const i in $.character) {
-        const c = $.character[i]
-        d[i] = [c.ps.x, c.ps.y, c.ps.z, c.health.hp, c.health.mp]
+      const chars = Object.values($.character)
+      if (chars.length < 2) return null
+
+      // 按角色id区分：Davis=11, Dennis=9
+      let davis = null, dennis = null
+      for (var i = 0; i < chars.length; i++) {
+        // if (chars[i].data.id === 11) davis = chars[i]
+        // if (chars[i].data.id === 9) dennis = chars[i]
+        if (chars[i].data.bmp.name === 'Davis') davis = chars[i]
+        if (chars[i].data.bmp.name === 'Dennis') dennis = chars[i]
       }
-      return d
+      if (!davis || !dennis) return null
+
+      return {
+        time: $.time.t,
+        davis: {
+          x: davis.ps.x, y: davis.ps.y,
+          hp: davis.health.hp, mp: davis.health.mp,
+          frame: davis.frame.N, dir: davis.ps.dir
+        },
+        dennis: {
+          x: dennis.ps.x, y: dennis.ps.y,
+          hp: dennis.health.hp, mp: dennis.health.mp,
+          frame: dennis.frame.N, dir: dennis.ps.dir
+        }
+      }
     }
 
     match.prototype.TU_trans = function () {
@@ -378,7 +496,7 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
         $.time.$fps.value = Math.round(1000 / diff * mul) + 'fps'
       }
     }
-    
+
     match.prototype.transform_panel = function (from_uid, to_uid) {
       const $ = this
       // ==========panel==========
@@ -398,7 +516,7 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
       }
       if (from_index == -1) { return }
       if (to_index != -1) {
-        $.panel[from_index].spic.temp_img = {0: $.panel[from_index].spic.img[0]}
+        $.panel[from_index].spic.temp_img = { 0: $.panel[from_index].spic.img[0] }
         $.panel[from_index].spic.img[0] = $.panel[to_index].spic.img[0]
       } else {
         $.panel[from_index].spic.img = $.panel[from_index].spic.temp_img

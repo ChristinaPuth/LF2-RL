@@ -1511,27 +1511,30 @@ define(['LF/global', 'LF/network', 'LF/soundpack', 'LF/match', 'LF/util', 'LF/to
           role: role
         })
       }
+
       this.start_debug = function () {
         const match = this.start_match({
           players: [
             {
               use: true,
-              name: 'Player1',
+              name: 'Davis',
               type: 'human',
-              selected: 3,
+              selected: 10,
+              selected_AI: 0,
               team: 1
             },
             {
               use: true,
-              name: 'Player2',
-              type: 'human',
-              selected: 3,
+              name: 'Dennis',
+              type: 'computer',
+              selected: 8,
+              selected_AI: 0,
               team: 2
             }
           ],
           options: {
-            background: -1, // random
-            difficulty: 2 // difficult
+            background: -1,
+            difficulty: 2
           }
         })
       }
