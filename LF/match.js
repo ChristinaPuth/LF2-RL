@@ -2,6 +2,12 @@
 var rl_ws = null;
 var rl_action = 0;
 var rl_controller = null; // 将在 match 创建后设置
+var rl_last_damage_t = 0;  // 上次造成伤害的时间
+var rl_last_dennis_hp = 500;  // 上次 dennis 的 hp
+var rl_reloading = false;  // 防止重复 reload
+
+// Headless mode: ?headless 参数跳过 canvas 渲染，大幅提速
+var rl_headless = (window.location.search.indexOf('headless') !== -1);
 
 var ACTION_MAP = [
   [],                        // 0: 不动
@@ -20,12 +26,14 @@ var ACTION_MAP = [
 function rl_inject_action(action) {
   if (!rl_controller) return;
   var keys = ACTION_MAP[action] || [];
-  // 先释放所有键
   var all_keys = ['left', 'right', 'up', 'down', 'jump', 'att', 'def'];
+
+  // 正确方式：往 buf 里 push 事件，fetch() 时才会被游戏读到
+  // 先 push 所有键的 up 事件（清除之前的状态）
   for (var i = 0; i < all_keys.length; i++) {
     rl_controller.buf.push([all_keys[i], 0]);
   }
-  // 再按下新的键
+  // 再 push 当前动作的 down 事件
   for (var i = 0; i < keys.length; i++) {
     rl_controller.buf.push([keys[i], 1]);
   }
@@ -269,11 +277,31 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
         $fps: util.div('fps')
       }
       if (!$.time.$fps) $.calculate_fps = function () { }
-      $.time.timer = network.setInterval(function () { return $.frame() }, 1000 / Global.gameplay.framerate)
+      $.time.timer = network.setInterval(function () { return $.frame() }, 1000 / Global.gameplay.framerate / 1.5)
     }
 
     match.prototype.frame = function () {
       const $ = this
+      // 每帧在 fetch 之前注入动作，保证攻击键被正确检测
+      if (rl_controller) {
+        rl_inject_action(rl_action)
+        // 每30帧打印一次调试信息
+        if ($.time.t % 30 === 0) {
+          var action_names = ['idle', 'left', 'right', 'jump', 'down', 'att', 'def', 'left+att', 'right+att', 'jump+att', 'down+att']
+          var dbg_state = $.game_state ? $.game_state() : null
+          if (dbg_state) {
+            console.log(
+              '[t=' + $.time.t + '] action=' + action_names[rl_action] +
+              ' | davis hp=' + dbg_state.davis.hp +
+              ' | dennis hp=' + dbg_state.dennis.hp +
+              ' | dx=' + Math.round(dbg_state.davis.x - dbg_state.dennis.x) +
+              ' | att_key=' + (rl_controller.buf.length > 0 ? '1' : '0')
+            )
+            // 超时检测已关闭，依靠 env.py 的 MAX_STEPS 控制每局长度
+            // 帧率检测已关闭
+          }
+        }
+      }
       if ($.control) { $.control.fetch() }
       if (!$.time.paused || $.time.paused === 'F2') {
         for (const i in $.character) {
@@ -300,7 +328,7 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
           $.match_event('start')
         }
         $.time.t++
-        $.manager.canvas.render()
+        if (!rl_headless) { $.manager.canvas.render() }
         $.calculate_fps()
 
         if ($.time.paused === 'F2') {
@@ -316,11 +344,27 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
       if (rl_ws && rl_ws.readyState === 1 && state) {
         rl_ws.send(JSON.stringify(state))
         // 检测游戏结束，自动重启
-        if (state.davis.hp <= 0 || state.dennis.hp <= 0) {
+        // 超时检测：超过200帧没有造成伤害就重开
+        if (!window.rl_last_dennis_hp) window.rl_last_dennis_hp = state.dennis.hp
+        if (!window.rl_no_damage_frames) window.rl_no_damage_frames = 0
+        if (state.dennis.hp < window.rl_last_dennis_hp) {
+          window.rl_no_damage_frames = 0  // dennis掉血了，重置计数
+          window.rl_last_dennis_hp = state.dennis.hp
+        } else {
+          window.rl_no_damage_frames++
+        }
+        var timeout = false  // 关闭超时重开，让每局打完
+
+        if ((state.davis.hp <= 0 || state.dennis.hp <= 0 || timeout) && !window.rl_reloading) {
+          if (timeout) console.log('超时重开！frames=' + window.rl_no_damage_frames)
+          window.rl_reloading = true
+          window.rl_no_damage_frames = 0
+          window.rl_last_dennis_hp = null
           setTimeout(function () {
             rl_controller = null
+            window.rl_reloading = false
             window.location.reload()
-          }, 2000)  // 2秒后自动刷新
+          }, 500)
         }
       }
       return state
@@ -341,13 +385,18 @@ define(['core/util', 'core/controller', 'LF/sprite-select',
       const chars = Object.values($.character)
       if (chars.length < 2) return null
 
-      // 按角色id区分：Davis=11, Dennis=9
+      // 第一帧打印所有角色名字，方便调试
+      if ($.time.t === 1) {
+        chars.forEach(function (c) {
+          console.log('角色 bmp.name:', c.data.bmp.name, '| team:', c.team)
+        })
+      }
+
+      // 按队伍区分：team=1 是 Davis(RL), team=2 是 Dennis(AI)
       let davis = null, dennis = null
       for (var i = 0; i < chars.length; i++) {
-        // if (chars[i].data.id === 11) davis = chars[i]
-        // if (chars[i].data.id === 9) dennis = chars[i]
-        if (chars[i].data.bmp.name === 'Davis') davis = chars[i]
-        if (chars[i].data.bmp.name === 'Dennis') dennis = chars[i]
+        if (chars[i].team === 1) davis = chars[i]
+        if (chars[i].team === 2) dennis = chars[i]
       }
       if (!davis || !dennis) return null
 
