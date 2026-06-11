@@ -119,9 +119,3 @@ Special moves are packed as single atomic actions — no key-sequence learning r
 
 This project builds on [F.LF](https://github.com/Project-F/F.LF) by Project-F, which provides the HTML5 game engine, character sprites, and physics. We modified `match.js` to broadcast game state over WebSocket and added the entire `lf2_rl/` directory for RL training.
 
----
-
-## Course
-
-UC Davis EEC 289A — Spring 2026  
-Shun-Hung Lee · Xiran Cheng · You-Rong Shaw · Tiannan Zhang
