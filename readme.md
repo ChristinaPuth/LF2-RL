@@ -1,55 +1,127 @@
-<div align="center">
+# LF2-RL: Training a Reinforcement Learning Agent to Play Little Fighter 2
 
-  <img src="docs/Project F badge.png" width="240"/>
+> **Based on [F.LF](https://github.com/Project-F/F.LF)** — an open-source HTML5 reimplementation of Little Fighter 2 by Project-F. The game engine, character data, and JS controller are inherited from that project. We added a WebSocket bridge and RL training code on top.
 
-  <h1>Project F</h1>
+Training an RL agent (Davis) to defeat the built-in AI opponent (Dennis) in Little Fighter 2, a classic 2.5D fighting game.
 
-  <p>
-    <strong>Open Source LF2 Implementation</strong>
-  </p>
+The agent went through two training phases, achieving a **50–64% rolling win rate** against the hard-difficulty AI in the final phase.
 
-</div>
+---
 
-Project F has three ultimate goals:
-1. Continuation of LF2
-2. A codebase for more creativity
-3. Promote the fighter game genre and open source movement
+## Results
 
-Start playing on [Project F](https://project-f.github.io/F.LF/game/game.html) and reading the [documentation](https://project-f.github.io/F.LF/).
+| Phase | Method | Win Rate (Hard) |
+|-------|--------|-----------------|
+| Phase 2 | Custom Env + PPO | 9.6% |
+| Phase 3 | Double DQN + Curriculum | **50–64%** |
 
-## F.LF v0.9.9
+---
 
-F.LF is an open source implementation of [LF2](http://lf2.net) engineered from the ground up (aka clean room implementation) for the modern web.
-
-<img src="http://lh3.googleusercontent.com/xyWjOFXTlezMzDldMqRIPshN7i9ez3VAXbdaW2t-t18=w1600" width="600">
-
-## Features
-- Cross platform HTML5: mobile & desktop
-- Supported characters: Bandit, Deep, John, Henry, Rudolf, Louis, Firen, Freeze, Dennis, Woody, Davis
-- Supports all 1.9 backgrounds (except Lee On Road) in 16:9 screen
-- VS mode
-- PvP networking via WebSocket
-  - You can host your own WebSocket server
-  - Can even connect between PC and mobile!
-- Scriptable and selectable AI
-- data files are converted from original dat to json in a similar format. so data changing concepts remain
-
-## Install
-
-The two repositories [F.LF](https://github.com/Project-F/F.LF) and [LF2_19](https://github.com/Project-F/LF2_19), must be named and placed as below:
+## Repository Structure
 
 ```
- F
- |--F.LF
- |--LF2_19
+lf2-rl/
+├── lf2_rl/
+│   ├── env.py           # Gymnasium environment — WebSocket bridge, reward, obs
+│   ├── bridge.py        # Low-level WebSocket server (JS ↔ Python communication)
+│   ├── train.py         # Phase 2: PPO training loop (Stable-Baselines3)
+│   ├── train_DQN.py     # Phase 3: Double DQN training loop
+│   ├── test_bridge.py   # Bridge connection test utility
+│   └── logs/            # Training logs and win-rate plots
+├── LF/                  # F.LF game engine (inherited, with RL modifications)
+│   ├── match.js         # Match logic (modified to push state via WebSocket)
+│   └── controller.js    # Key injection controller
+└── index.html           # Game entry point
 ```
 
-Then simply open `game/game.html` in your favourite browser.
+All training code lives in `lf2_rl/`. Use `train.py` for Phase 2 (PPO) and `train_DQN.py` for Phase 3 (Double DQN).
 
-## License
+---
 
-[GNU General Public License v3.0](LICENSE) or https://www.gnu.org/licenses/gpl-3.0.en.html
+## How It Works
 
-## Acknowledgement
+The game runs in a browser (F.LF). A Python Gym environment communicates with it over WebSocket:
 
-If you liked LF2, consider supporting the original author [Marti](https://www.patreon.com/martiwong) in remastering LF2.
+```
+Browser (F.LF JS game)
+        ↕  WebSocket (localhost:8765)
+Python LF2Env (env.py)
+        ↕  step() / reset()
+RL Agent (Double DQN)
+        ↓  action (0–10) injected via JS controller
+```
+
+Each game frame, the JS side pushes a JSON state object (HP, MP, position, facing direction for both characters) to Python. The agent picks one of 11 discrete macro-actions; the controller injects the corresponding key inputs.
+
+---
+
+## Quickstart
+
+**1. Install dependencies**
+```bash
+pip install torch numpy gymnasium websockets stable-baselines3
+```
+
+**2. Serve the game**
+```bash
+cd /path/to/repo
+python -m http.server 8000
+```
+
+**3. Open the game in browser**
+```
+http://localhost:8000/index.html
+```
+
+**4. Run training**
+```bash
+cd lf2_rl
+
+# Phase 2: PPO
+python train.py
+
+# Phase 3: Double DQN (recommended)
+python train_DQN.py
+```
+
+The script waits for the browser to connect, then starts training automatically.
+
+---
+
+## Action Space
+
+11 discrete macro-actions:
+
+| ID | Action | ID | Action |
+|----|--------|----|--------|
+| 0 | Idle | 6 | Defend |
+| 1 | Left | 7 | Left + Attack |
+| 2 | Right | 8 | Right + Attack |
+| 3 | Jump | 9 | Jump + Attack |
+| 4 | Crouch | 10 | Down + Attack (Shoryuken) |
+| 5 | Attack | | |
+
+Special moves are packed as single atomic actions — no key-sequence learning required.
+
+---
+
+## Key Design Decisions
+
+- **Off-policy (Double DQN + Replay Buffer)**: each experience is reused many times, critical when browser steps are slow
+- **Macro-actions**: special moves packed as single actions to avoid needing recurrent memory
+- **Anti-passivity reward**: per-step penalty to prevent stalling strategies
+- **Timeout penalty > loss penalty**: prevents the agent from dragging out losing matches
+- **3-stage curriculum**: Dumbass AI → Crusher AI → hardest AI, advancing on 70% rolling win rate
+
+---
+
+## Acknowledgements
+
+This project builds on [F.LF](https://github.com/Project-F/F.LF) by Project-F, which provides the HTML5 game engine, character sprites, and physics. We modified `match.js` to broadcast game state over WebSocket and added the entire `lf2_rl/` directory for RL training.
+
+---
+
+## Course
+
+UC Davis EEC 289A — Spring 2026  
+Shun-Hung Lee · Xiran Cheng · You-Rong Shaw · Tiannan Zhang
